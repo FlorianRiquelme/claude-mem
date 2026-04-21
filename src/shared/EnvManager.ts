@@ -12,6 +12,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
+import { execFileSync } from 'child_process';
 import { logger } from '../utils/logger.js';
 
 // Path to claude-mem's centralized .env file
@@ -251,13 +252,60 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
     // 4. Pass through Claude CLI's OAuth token if available (fallback for CLI subscription billing)
     // When no ANTHROPIC_API_KEY is configured, the spawned CLI uses subscription billing
     // which requires either ~/.claude/.credentials.json or CLAUDE_CODE_OAUTH_TOKEN.
-    // The worker inherits this token from the Claude Code session that started it.
-    if (!isolatedEnv.ANTHROPIC_API_KEY && process.env.CLAUDE_CODE_OAUTH_TOKEN) {
-      isolatedEnv.CLAUDE_CODE_OAUTH_TOKEN = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    // Resolution order:
+    //   a) inherit from process.env (parent Claude Code session set it)
+    //   b) macOS: read from Keychain ("Claude Code-credentials"), which Claude
+    //      CLI keeps refreshed. This makes daemon restarts work without the
+    //      parent shell — the Anthropic SDK's internal Keychain reader hits an
+    //      ACL in detached daemon context, but the `security` CLI does not.
+    if (!isolatedEnv.ANTHROPIC_API_KEY) {
+      if (process.env.CLAUDE_CODE_OAUTH_TOKEN) {
+        isolatedEnv.CLAUDE_CODE_OAUTH_TOKEN = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+      } else {
+        const keychainToken = getMacOSKeychainOAuthToken();
+        if (keychainToken) {
+          isolatedEnv.CLAUDE_CODE_OAUTH_TOKEN = keychainToken;
+        }
+      }
     }
   }
 
   return isolatedEnv;
+}
+
+/**
+ * On macOS, read the Claude Code OAuth access token from the login Keychain.
+ * Returns undefined on non-Darwin platforms, missing entries, or read failures.
+ * Claude CLI refreshes this entry automatically, so callers get a fresh token
+ * without any manual upkeep.
+ */
+export function getMacOSKeychainOAuthToken(): string | undefined {
+  if (process.platform !== 'darwin') return undefined;
+
+  const user = process.env.USER || process.env.LOGNAME;
+  if (!user) return undefined;
+
+  try {
+    const raw = execFileSync(
+      '/usr/bin/security',
+      ['find-generic-password', '-a', user, '-s', 'Claude Code-credentials', '-w'],
+      { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 }
+    ).trim();
+
+    if (!raw) return undefined;
+
+    const parsed = JSON.parse(raw) as { claudeAiOauth?: { accessToken?: string } };
+    const token = parsed?.claudeAiOauth?.accessToken;
+    return typeof token === 'string' && token.length > 0 ? token : undefined;
+  } catch (error: unknown) {
+    logger.debug(
+      'ENV',
+      'macOS Keychain OAuth token lookup failed',
+      {},
+      error instanceof Error ? error : new Error(String(error))
+    );
+    return undefined;
+  }
 }
 
 /**
@@ -297,6 +345,9 @@ export function getAuthMethodDescription(): string {
   }
   if (process.env.CLAUDE_CODE_OAUTH_TOKEN) {
     return 'Claude Code OAuth token (from parent process)';
+  }
+  if (process.platform === 'darwin' && getMacOSKeychainOAuthToken()) {
+    return 'Claude Code OAuth token (from macOS Keychain)';
   }
   return 'Claude Code CLI (subscription billing)';
 }
