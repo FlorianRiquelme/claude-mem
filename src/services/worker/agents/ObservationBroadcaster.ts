@@ -12,6 +12,7 @@
  */
 
 import type { WorkerRef, ObservationSSEPayload, SummarySSEPayload } from './types.js';
+import { OBSERVER_SESSIONS_PROJECT } from '../../../shared/paths.js';
 import { logger } from '../../../utils/logger.js';
 
 /**
@@ -25,6 +26,9 @@ export function broadcastObservation(
   payload: ObservationSSEPayload
 ): void {
   if (!worker?.sseBroadcaster) {
+    return;
+  }
+  if (payload.project === OBSERVER_SESSIONS_PROJECT) {
     return;
   }
 
@@ -45,6 +49,9 @@ export function broadcastSummary(
   payload: SummarySSEPayload
 ): void {
   if (!worker?.sseBroadcaster) {
+    return;
+  }
+  if (payload.project === OBSERVER_SESSIONS_PROJECT) {
     return;
   }
 

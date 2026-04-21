@@ -7,6 +7,7 @@
 
 import { SSEBroadcaster } from '../SSEBroadcaster.js';
 import type { WorkerService } from '../../worker-service.js';
+import { OBSERVER_SESSIONS_PROJECT } from '../../../shared/paths.js';
 import { logger } from '../../../utils/logger.js';
 
 export class SessionEventBroadcaster {
@@ -28,6 +29,13 @@ export class SessionEventBroadcaster {
     prompt_text: string;
     created_at_epoch: number;
   }): void {
+    // Skip internal observer-session prompts so they don't show up in the UI feed
+    if (prompt.project === OBSERVER_SESSIONS_PROJECT) {
+      // Processing status still needs to update — queue depth changed
+      this.workerService.broadcastProcessingStatus();
+      return;
+    }
+
     // Broadcast prompt details
     this.sseBroadcaster.broadcast({
       type: 'new_prompt',
